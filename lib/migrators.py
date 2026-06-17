@@ -4,9 +4,12 @@ from lib.config import (
     normalize_text,
     parse_ukuran,
     resolve_harga_beli,
+    resolve_harga_beli_lama,
     resolve_harga_jual,
+    resolve_harga_jual_lama,
     resolve_hpp,
     resolve_stok_qty,
+    resolve_supplier_fields,
     slug_code,
 )
 from lib.db import fetch_all_dict, fetch_one, lookup_id_map, save_id_map
@@ -20,10 +23,17 @@ def migrate_suppliers(mysql, pg, *, dry_run: bool, user_id: int) -> dict:
         rows = fetch_all_dict(
             mysql,
             """
-            SELECT cENTpk, cENTcode, cENTdesc, cENTadd1, cENTadd2, cENTadd3, nENTsuspend
-            FROM entity
-            WHERE nENTsupp = 1
-            ORDER BY cENTdesc
+            SELECT
+                e.cENTpk, e.cENTcode, e.cENTdesc,
+                e.cENTadd1, e.cENTadd2, e.cENTadd3, e.cENTadd4, e.cENTadd5,
+                e.cENTmemo, e.cENTrek, e.cENTacc, e.cENTimage,
+                e.centadd1s, e.centadd2s, e.centadd3s, e.centadd4s, e.centadd5s,
+                e.nENTsuspend,
+                c.cCITdesc AS wilayah
+            FROM entity e
+            LEFT JOIN city c ON c.cCITpk = e.cENTfkCIT
+            WHERE e.nENTsupp = 1
+            ORDER BY e.cENTdesc
             """,
         )
 
@@ -52,17 +62,7 @@ def migrate_suppliers(mysql, pg, *, dry_run: bool, user_id: int) -> dict:
             stats["mapped"] += 1
             continue
 
-        address_parts = [
-            p
-            for p in [
-                normalize_text(row["cENTadd1"], 60),
-                normalize_text(row["cENTadd2"], 60),
-                normalize_text(row["cENTadd3"], 60),
-            ]
-            if p
-        ]
-        address = ", ".join(address_parts) if address_parts else None
-        status = int(row["nENTsuspend"] or 0) == 0
+        fields = resolve_supplier_fields(row)
 
         if dry_run:
             stats["inserted"] += 1
@@ -71,11 +71,26 @@ def migrate_suppliers(mysql, pg, *, dry_run: bool, user_id: int) -> dict:
         with pg.cursor() as cur:
             cur.execute(
                 """
-                INSERT INTO supplier (code, name, address, status, created_by, updated_by, created_at, updated_at)
-                VALUES (%s, %s, %s, %s, %s, %s, NOW(), NOW())
+                INSERT INTO supplier (
+                    code, name, address, wilayah, phone, nama_bank, nomor_rekening,
+                    nama_pemilik_rekening, status, created_by, updated_by, created_at, updated_at
+                )
+                VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, NOW(), NOW())
                 RETURNING id
                 """,
-                (code, name, address, status, user_id, user_id),
+                (
+                    code,
+                    name,
+                    fields["address"],
+                    fields["wilayah"],
+                    fields["phone"],
+                    fields["nama_bank"],
+                    fields["nomor_rekening"],
+                    fields["nama_pemilik_rekening"],
+                    fields["status"],
+                    user_id,
+                    user_id,
+                ),
             )
             new_id = cur.fetchone()[0]
         save_id_map(pg, "supplier", legacy_pk, new_id)
@@ -271,6 +286,7 @@ BARANG_SOURCE_SQL = """
         s.cSTKfkGRP,
         s.cSTKfkENT,
         s.nSTKbuy,
+        s.nstkhbeli,
         s.nHrgQty01,
         s.nSTKcogs,
         s.nSTKopen,
@@ -290,6 +306,8 @@ BARANG_SOURCE_SQL = """
             MIN(CASE WHEN cSTDcode <> '' THEN cSTDcode END) AS kode_barang,
             MAX(CASE WHEN nSTDretail > 0 THEN nSTDretail END) AS harga_retail,
             MAX(CASE WHEN nSTDprice > 0 THEN nSTDprice END) AS harga_price,
+            MAX(CASE WHEN nSTDoprice > 0 THEN nSTDoprice END) AS harga_beli_lama_src,
+            MAX(CASE WHEN nSTDoretail > 0 THEN nSTDoretail END) AS harga_jual_lama_src,
             SUM(
                 COALESCE(outlet01, 0) + COALESCE(outlet02, 0) + COALESCE(outlet03, 0)
                 + COALESCE(outlet04, 0) + COALESCE(outlet05, 0) + COALESCE(outlet06, 0)
@@ -506,6 +524,8 @@ def migrate_barang(
                 consignment_pct = row.get("nstktdiscp")
                 harga_beli = resolve_harga_beli(row)
                 harga_jual = resolve_harga_jual(row)
+                harga_beli_lama = resolve_harga_beli_lama(row)
+                harga_jual_lama = resolve_harga_jual_lama(row)
                 hpp = resolve_hpp(row)
                 # Prioritas stok:
                 # 1) transaksi (invoicedetail) jika tersedia
@@ -529,11 +549,13 @@ def migrate_barang(
                     cur.execute(
                         """
                         INSERT INTO barang (
-                            kode_barang, nama, stok_awal, stok_akhir, harga_beli, harga_jual, hpp,
+                            kode_barang, nama, stok_awal, stok_akhir, harga_beli, harga_jual,
+                            harga_beli_lama, harga_jual_lama, hpp,
                             brand_id, supplier_id, ukuran, warna, type, is_consignment,
                             consignment_percentage, created_by, updated_by, created_at, updated_at
                         ) VALUES (
-                            %s, %s, %s, %s, %s, %s, %s,
+                            %s, %s, %s, %s, %s, %s,
+                            %s, %s, %s,
                             %s, %s, %s, %s, %s, %s,
                             %s, %s, %s, NOW(), NOW()
                         )
@@ -546,6 +568,8 @@ def migrate_barang(
                             stok_qty,
                             harga_beli,
                             harga_jual,
+                            harga_beli_lama,
+                            harga_jual_lama,
                             hpp,
                             brand_id,
                             supplier_id,
