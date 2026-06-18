@@ -2,7 +2,10 @@
 
 Toolkit Python untuk migrasi master data dari aplikasi desktop ISX/evacer ke aplikasi web Laravel (PostgreSQL).
 
-Dokumentasi lengkap mapping & bisnis: [`docs/DOKUMENTASI-MIGRASI.md`](docs/DOKUMENTASI-MIGRASI.md)
+Dokumentasi lengkap mapping & bisnis: [`docs/DOKUMENTASI-MIGRASI.md`](docs/DOKUMENTASI-MIGRASI.md)  
+**Urutan perintah (cheat sheet):** [`docs/MIGRASI-URUTAN.md`](docs/MIGRASI-URUTAN.md)  
+Panduan stok pajak (langkah 2–3): [`docs/MIGRASI-STOK-PAJAK.md`](docs/MIGRASI-STOK-PAJAK.md)  
+Migrasi cabang Ngawi/Caruban: [`docs/MIGRASI-CABANG.md`](docs/MIGRASI-CABANG.md)
 
 ---
 
@@ -140,12 +143,17 @@ Semua perintah lewat wrapper:
 | `./run.sh run --dry-run --only=supplier,brand,barang` | Simulasi migrasi |
 | `./run.sh run --fresh --only=supplier,brand,barang` | Migrasi penuh (hapus data lama dulu) |
 | `./run.sh run --only=barang --limit=1000` | Migrasi partial (testing) |
+| `./run.sh run --only=stok_pajak` | Isi `stok_pajak` dari DB pajak (lihat [`docs/MIGRASI-STOK-PAJAK.md`](docs/MIGRASI-STOK-PAJAK.md)) |
+| `./run.sh run --only=barang_pajak` | Insert barang pajak-only yang belum ada di web |
+| `./run.sh run --only=pajak_report` | Export CSV kode pajak (209 / mapping / insert) tanpa migrasi |
 
 ### Urutan migrasi
 
 ```
-supplier → brand (golongan) → barang
+supplier → brand (golongan) → barang → stok_pajak → barang_pajak (opsional)
 ```
+
+Detail langkah stok pajak: [`docs/MIGRASI-STOK-PAJAK.md`](docs/MIGRASI-STOK-PAJAK.md)
 
 Stok dihitung dari `invoicedetail` (DB full backup). Stok **boleh minus** sesuai ketentuan client.
 

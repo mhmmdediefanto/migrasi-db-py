@@ -14,8 +14,16 @@ sys.path.insert(0, str(ROOT))
 
 from lib.config import load_mapping, load_settings
 from lib.db import connect_mysql, connect_pg, ensure_id_map_table, fetch_one, truncate_master_data
-from lib.inspect_report import print_mysql_barang_stats, print_pg_barang_stats
+from lib.inspect_report import (
+    print_entity_comparison,
+    print_mysql_barang_stats,
+    print_pg_barang_stats,
+    print_ppn_inspect_stats,
+    print_trx_stock_by_branch,
+)
 from lib.progress import Spinner, print_step
+from lib.cabang_migrators import migrate_barang_union, migrate_stok_cabang
+from lib.pajak_migrators import export_pajak_kode_reports, migrate_barang_pajak, migrate_stok_pajak
 from lib.migrators import (
     migrate_barang,
     migrate_brands,
@@ -30,6 +38,10 @@ STEPS = {
     "gudang": migrate_gudang,
     "store": migrate_store,
     "barang": migrate_barang,
+    "stok_pajak": migrate_stok_pajak,
+    "barang_pajak": migrate_barang_pajak,
+    "barang_union": migrate_barang_union,
+    "stok_cabang": migrate_stok_cabang,
 }
 
 
@@ -53,27 +65,17 @@ def cmd_mapping() -> None:
     print("\nGroup Barang (footwear) belum ada padanan di MySQL.")
 
 
-def cmd_inspect(mysql_master, mysql_trx, pg) -> None:
-    checks = [
-        ("Supplier", "entity (nENTsupp=1)", "SELECT COUNT(*) FROM entity WHERE nENTsupp = 1", "supplier"),
-        ("Golongan", "stockgroup", "SELECT COUNT(*) FROM stockgroup", "brands"),
-        ("Gudang", "warehouse", "SELECT COUNT(*) FROM warehouse", "master_gudang"),
-        ("Store", "outlet", "SELECT COUNT(*) FROM outlet", "master_store"),
-        ("Barang", "stock (aktif)", "SELECT COUNT(*) FROM stock WHERE nSTKsuspend = 0", "barang"),
-    ]
-
-    print("=== INSPECT — perbandingan MySQL vs PostgreSQL ===\n")
-    print(f"{'Entitas':<12}{'MySQL':<22}{'PostgreSQL':<14}Selisih")
-    print("-" * 60)
-
-    with mysql_master.cursor() as mcur, pg.cursor() as pcur:
-        for step, (label, mysql_label, mysql_sql, pg_table) in enumerate(checks, 1):
-            with Spinner(f"[{step}/{len(checks)}] Membandingkan {label}..."):
-                mcur.execute(mysql_sql)
-                mysql_count = int(mcur.fetchone()["COUNT(*)"])
-                pcur.execute(f"SELECT COUNT(*) FROM {pg_table}")
-                pg_count = int(pcur.fetchone()[0])
-            print(f"{label:<12}{mysql_label} ({mysql_count})".ljust(22) + f"{pg_count:<14}{mysql_count - pg_count}")
+def cmd_inspect(
+    mysql_master,
+    mysql_trx,
+    mysql_trx_pajak,
+    mysql_trx_ngawi,
+    mysql_trx_caruban,
+    pg,
+) -> None:
+    print_entity_comparison(
+        mysql_master, mysql_trx_ngawi, mysql_trx_caruban, pg
+    )
 
     with Spinner("Menghitung migration_id_map..."):
         mapped = fetch_one(pg, "SELECT COUNT(*) FROM migration_id_map") or 0
@@ -114,36 +116,55 @@ def cmd_inspect(mysql_master, mysql_trx, pg) -> None:
                 count = int(mcur.fetchone()["COUNT(*)"])
             print(f"  {label}: {count:,} barang")
 
-    print("\n=== Stok dari transaksi (MySQL full backup) ===")
+    print_trx_stock_by_branch(mysql_trx, mysql_trx_ngawi, mysql_trx_caruban)
+
+    print("\n=== Stok dari transaksi pajak (MySQL DB pajak) ===")
     try:
-        with Spinner("Menghitung stok dari invoicedetail (bisa 30–60 detik)..."):
-            with mysql_trx.cursor() as mcur:
+        with Spinner("Menghitung stok pajak dari invoicedetail..."):
+            with mysql_trx_pajak.cursor() as mcur:
                 mcur.execute("SELECT COUNT(*) AS total FROM invoicedetail")
                 total = int(mcur.fetchone()["total"])
                 mcur.execute(
                     """
                     SELECT COUNT(*) AS c FROM (
-                        SELECT cIVDfkSTK,
-                            SUM(COALESCE(nIVDqtyin,0) - COALESCE(nIVDqtyout,0)) AS net
-                        FROM invoicedetail
-                        WHERE cIVDfkSTK IS NOT NULL AND cIVDfkSTK <> ''
-                        GROUP BY cIVDfkSTK
+                        SELECT sd.kode_barang,
+                            SUM(COALESCE(d.nIVDqtyin,0) - COALESCE(d.nIVDqtyout,0)) AS net
+                        FROM invoicedetail d
+                        INNER JOIN stock s ON d.cIVDfkSTK = s.cSTKpk
+                        INNER JOIN (
+                            SELECT cSTDfkSTK, MIN(TRIM(cSTDcode)) AS kode_barang
+                            FROM stockdetail
+                            WHERE cSTDcode IS NOT NULL AND TRIM(cSTDcode) <> ''
+                            GROUP BY cSTDfkSTK
+                        ) sd ON sd.cSTDfkSTK = s.cSTKpk
+                        WHERE s.nSTKsuspend = 0
+                        GROUP BY sd.kode_barang
                         HAVING net <> 0
                     ) t
                     """
                 )
                 non_zero = int(mcur.fetchone()["c"])
         print(f"  invoicedetail rows: {total:,}")
-        print(f"  barang dengan net stok != 0: {non_zero:,}")
+        print(f"  kode barang dengan net stok pajak != 0: {non_zero:,}")
     except Exception as exc:
-        print(f"  [skip] Tidak bisa baca invoicedetail: {exc}")
+        print(f"  [skip] Tidak bisa baca DB pajak: {exc}")
 
+    print_ppn_inspect_stats(mysql_master, mysql_trx, mysql_trx_pajak, pg)
     print_mysql_barang_stats(mysql_master, mysql_trx)
     print_pg_barang_stats(pg)
     print("\n✓ Inspect selesai.")
 
 
-def cmd_run(mysql_master, mysql_trx, pg, settings, args) -> None:
+def cmd_run(
+    mysql_master,
+    mysql_trx,
+    mysql_trx_pajak,
+    mysql_trx_ngawi,
+    mysql_trx_caruban,
+    pg,
+    settings,
+    args,
+) -> None:
     only = [item.strip() for item in args.only.split(",") if item.strip()]
     print("=== DRY RUN ===" if args.dry_run else "=== MIGRASI MASTER ===")
 
@@ -157,18 +178,40 @@ def cmd_run(mysql_master, mysql_trx, pg, settings, args) -> None:
         "gudang": "Gudang",
         "store": "Store",
         "barang": "Barang",
+        "stok_pajak": "Stok Pajak (update stok_akhir.stok_pajak)",
+        "barang_pajak": "Barang Pajak (insert dari DB pajak)",
+        "barang_union": "Barang Union (Ngawi + Caruban → katalog web)",
+        "stok_cabang": "Stok Cabang (Ngawi + Caruban per gudang)",
+        "pajak_report": "Laporan CSV kode pajak (209 vs mapping vs insert)",
     }
     total_steps = len(only)
 
     for step_no, key in enumerate(only, 1):
-        if key not in STEPS:
+        if key not in STEPS and key != "pajak_report":
             raise SystemExit(f"Entitas tidak dikenal: {key}")
 
         print_step(step_no, total_steps, step_labels.get(key, key))
-        fn = STEPS[key]
 
-        if key == "barang":
-            stats = fn(
+        if key == "pajak_report":
+            stats = export_pajak_kode_reports(mysql_master, mysql_trx_pajak, pg)
+        elif key == "barang_union":
+            stats = migrate_barang_union(
+                mysql_trx_ngawi,
+                mysql_trx_caruban,
+                pg,
+                dry_run=args.dry_run,
+                user_id=settings["user_id"],
+                batch_size=settings["batch_size"],
+            )
+        elif key == "stok_cabang":
+            stats = migrate_stok_cabang(
+                {"ngawi": mysql_trx_ngawi, "caruban": mysql_trx_caruban},
+                pg,
+                dry_run=args.dry_run,
+                user_id=settings["user_id"],
+            )
+        elif key == "barang":
+            stats = STEPS[key](
                 mysql_master,
                 mysql_trx,
                 pg,
@@ -178,8 +221,17 @@ def cmd_run(mysql_master, mysql_trx, pg, settings, args) -> None:
                 limit=args.limit,
                 offset=args.offset,
             )
+        elif key in ("stok_pajak", "barang_pajak"):
+            stats = STEPS[key](
+                mysql_trx_pajak,
+                pg,
+                dry_run=args.dry_run,
+                user_id=settings["user_id"],
+            )
+            if key == "stok_pajak":
+                export_pajak_kode_reports(mysql_master, mysql_trx_pajak, pg)
         else:
-            stats = fn(
+            stats = STEPS[key](
                 mysql_master,
                 pg,
                 dry_run=args.dry_run,
@@ -226,6 +278,17 @@ def main() -> None:
     settings = load_settings()
     mysql_master = connect_mysql(settings["mysql_master"])
     mysql_trx = connect_mysql(settings["mysql_trx"])
+    mysql_trx_pajak = connect_mysql(settings["mysql_trx_pajak"])
+    mysql_trx_ngawi = (
+        connect_mysql(settings["mysql_trx_ngawi"])
+        if settings["mysql_trx_ngawi"]["database"]
+        else None
+    )
+    mysql_trx_caruban = (
+        connect_mysql(settings["mysql_trx_caruban"])
+        if settings["mysql_trx_caruban"]["database"]
+        else None
+    )
     pg = connect_pg(settings["pg"])
 
     try:
@@ -234,15 +297,36 @@ def main() -> None:
         if args.command == "mapping":
             cmd_mapping()
         elif args.command == "inspect":
-            cmd_inspect(mysql_master, mysql_trx, pg)
+            cmd_inspect(
+                mysql_master,
+                mysql_trx,
+                mysql_trx_pajak,
+                mysql_trx_ngawi,
+                mysql_trx_caruban,
+                pg,
+            )
         elif args.command == "run":
-            cmd_run(mysql_master, mysql_trx, pg, settings, args)
+            cmd_run(
+                mysql_master,
+                mysql_trx,
+                mysql_trx_pajak,
+                mysql_trx_ngawi,
+                mysql_trx_caruban,
+                pg,
+                settings,
+                args,
+            )
     except Exception as exc:
         print(f"[ERROR] {exc}", file=sys.stderr)
         raise SystemExit(1) from exc
     finally:
         mysql_master.close()
         mysql_trx.close()
+        mysql_trx_pajak.close()
+        if mysql_trx_ngawi:
+            mysql_trx_ngawi.close()
+        if mysql_trx_caruban:
+            mysql_trx_caruban.close()
         pg.close()
 
 

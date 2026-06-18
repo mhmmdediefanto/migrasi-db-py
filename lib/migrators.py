@@ -334,6 +334,7 @@ def seed_stok_for_barang(
     qty: int,
     harga_satuan: float | None,
     user_id: int,
+    keterangan: str = "Stok Awal - Migrasi Desktop",
 ) -> None:
     """Isi stok_akhir + jejak stok awal (selaras dengan AutoStockService web)."""
     # Client memperbolehkan stok minus (hasil net transaksi)
@@ -370,7 +371,7 @@ def seed_stok_for_barang(
             (
                 barang_id,
                 gudang_id,
-                "Stok Awal - Migrasi Desktop",
+                keterangan,
                 masuk,
                 keluar,
                 qty,

@@ -38,6 +38,30 @@ def load_settings() -> dict:
             "user": os.getenv("MYSQL_USERNAME", ""),
             "password": os.getenv("MYSQL_PASSWORD", ""),
         },
+        "mysql_trx_pajak": {
+            "host": mysql_host,
+            "port": int(os.getenv("MYSQL_PORT", "3306")),
+            "database": os.getenv(
+                "MYSQL_TRX_PAJAK_DATABASE",
+                os.getenv("MYSQL_TRX_DATABASE", ""),
+            ),
+            "user": os.getenv("MYSQL_USERNAME", ""),
+            "password": os.getenv("MYSQL_PASSWORD", ""),
+        },
+        "mysql_trx_ngawi": {
+            "host": mysql_host,
+            "port": int(os.getenv("MYSQL_PORT", "3306")),
+            "database": os.getenv("MYSQL_TRX_DATABASE_NGAWI", ""),
+            "user": os.getenv("MYSQL_USERNAME", ""),
+            "password": os.getenv("MYSQL_PASSWORD", ""),
+        },
+        "mysql_trx_caruban": {
+            "host": mysql_host,
+            "port": int(os.getenv("MYSQL_PORT", "3306")),
+            "database": os.getenv("MYSQL_TRX_DATABASE_CARUBAN", ""),
+            "user": os.getenv("MYSQL_USERNAME", ""),
+            "password": os.getenv("MYSQL_PASSWORD", ""),
+        },
         "pg": {
             "host": os.getenv("PG_HOST", "localhost"),
             "port": int(os.getenv("PG_PORT", "5432")),
