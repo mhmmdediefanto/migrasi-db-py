@@ -10,6 +10,17 @@ from dotenv import load_dotenv
 ROOT = Path(__file__).resolve().parent.parent
 
 
+def _resolve_pg_sslmode(host: str) -> str | None:
+    """DigitalOcean managed PG wajib SSL; localhost tidak perlu."""
+    explicit = os.getenv("PG_SSLMODE", "").strip()
+    if explicit:
+        return explicit
+    normalized = (host or "").strip().lower()
+    if normalized in ("localhost", "127.0.0.1"):
+        return None
+    return "require"
+
+
 def load_settings() -> dict:
     load_dotenv(ROOT / ".env")
 
@@ -68,6 +79,7 @@ def load_settings() -> dict:
             "database": os.getenv("PG_DATABASE", ""),
             "user": os.getenv("PG_USERNAME", ""),
             "password": os.getenv("PG_PASSWORD", ""),
+            "sslmode": _resolve_pg_sslmode(os.getenv("PG_HOST", "localhost")),
         },
         "user_id": int(os.getenv("MIGRATION_DEFAULT_USER_ID", "1")),
         "batch_size": max(50, int(os.getenv("MIGRATION_BATCH_SIZE", "500"))),
@@ -117,8 +129,14 @@ def positive_decimal(value):
 
 
 def resolve_harga_jual(row) -> float | None:
-    """Prioritas: stock.nHrgQty01 → stockdetail.nSTDretail → stockdetail.nSTDprice."""
-    for key in ("nHrgQty01", "harga_retail", "harga_price"):
+    """
+    Harga jual aktif (sama seperti desktop / POS):
+    stockdetail.nSTDretail → stockdetail.nSTDprice.
+
+    nHrgQty01 sengaja TIDAK dipakai — client konfirmasi itu harga lama;
+    lihat resolve_harga_jual_lama().
+    """
+    for key in ("harga_retail", "harga_price"):
         value = positive_decimal(row.get(key))
         if value is not None:
             return value
@@ -155,14 +173,24 @@ def resolve_harga_beli_lama(row) -> float | None:
 
 
 def resolve_harga_jual_lama(row) -> float | None:
-    """Harga jual lama desktop: stockdetail.nSTDoretail."""
+    """
+    Harga jual lama desktop:
+    1. stockdetail.nSTDoretail
+    2. stock.nHrgQty01 (legacy, jika beda dari harga jual aktif)
+    """
     current = resolve_harga_jual(row)
     oretail = positive_decimal(row.get("harga_jual_lama_src"))
-    if oretail is None:
+    if oretail is not None:
+        if current is not None and abs(oretail - current) < 0.01:
+            return None
+        return oretail
+
+    legacy = positive_decimal(row.get("nHrgQty01"))
+    if legacy is None:
         return None
-    if current is not None and abs(oretail - current) < 0.01:
+    if current is not None and abs(legacy - current) < 0.01:
         return None
-    return oretail
+    return legacy
 
 
 def resolve_hpp(row) -> float | None:

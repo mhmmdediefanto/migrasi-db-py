@@ -19,13 +19,18 @@ def connect_mysql(cfg: dict):
 
 
 def connect_pg(cfg: dict):
-    conn = psycopg2.connect(
-        host=cfg["host"],
-        port=cfg["port"],
-        user=cfg["user"],
-        password=cfg["password"],
-        dbname=cfg["database"],
-    )
+    params = {
+        "host": cfg["host"],
+        "port": cfg["port"],
+        "user": cfg["user"],
+        "password": cfg["password"],
+        "dbname": cfg["database"],
+    }
+    sslmode = cfg.get("sslmode")
+    if sslmode:
+        params["sslmode"] = sslmode
+
+    conn = psycopg2.connect(**params)
     conn.autocommit = False
     return conn
 

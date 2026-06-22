@@ -24,6 +24,7 @@ from lib.inspect_report import (
 from lib.progress import Spinner, print_step
 from lib.cabang_migrators import migrate_barang_union, migrate_stok_cabang
 from lib.pajak_migrators import export_pajak_kode_reports, migrate_barang_pajak, migrate_stok_pajak
+from lib.harga_fix import DEFAULT_CSV, apply_harga_jual_fix, export_harga_jual_fix
 from lib.migrators import (
     migrate_barang,
     migrate_brands,
@@ -183,16 +184,29 @@ def cmd_run(
         "barang_union": "Barang Union (Ngawi + Caruban → katalog web)",
         "stok_cabang": "Stok Cabang (Ngawi + Caruban per gudang)",
         "pajak_report": "Laporan CSV kode pajak (209 vs mapping vs insert)",
+        "harga_export": "Export CSV harga_jual yang perlu diperbaiki (~21k)",
+        "harga_fix": "Apply harga_jual dari CSV (tanpa scan 725k)",
     }
     total_steps = len(only)
 
     for step_no, key in enumerate(only, 1):
-        if key not in STEPS and key != "pajak_report":
+        if key not in STEPS and key not in ("pajak_report", "harga_export", "harga_fix"):
             raise SystemExit(f"Entitas tidak dikenal: {key}")
 
         print_step(step_no, total_steps, step_labels.get(key, key))
 
-        if key == "pajak_report":
+        if key == "harga_export":
+            csv_path = Path(args.from_csv) if args.from_csv else DEFAULT_CSV
+            stats = export_harga_jual_fix(mysql_master, pg, csv_path=csv_path)
+        elif key == "harga_fix":
+            csv_path = Path(args.from_csv) if args.from_csv else DEFAULT_CSV
+            stats = apply_harga_jual_fix(
+                pg,
+                csv_path=csv_path,
+                dry_run=args.dry_run,
+                user_id=settings["user_id"],
+            )
+        elif key == "pajak_report":
             stats = export_pajak_kode_reports(mysql_master, mysql_trx_pajak, pg)
         elif key == "barang_union":
             stats = migrate_barang_union(
@@ -220,6 +234,7 @@ def cmd_run(
                 batch_size=settings["batch_size"],
                 limit=args.limit,
                 offset=args.offset,
+                update=args.update,
             )
         elif key in ("stok_pajak", "barang_pajak"):
             stats = STEPS[key](
@@ -267,6 +282,16 @@ def build_parser() -> argparse.ArgumentParser:
     )
     run.add_argument("--limit", type=int, default=0, help="Batas barang (0 = semua)")
     run.add_argument("--offset", type=int, default=0, help="Offset barang")
+    run.add_argument(
+        "--update",
+        action="store_true",
+        help="Update harga_jual (+ harga_jual_lama) barang existing dari nSTDretail; harga beli tidak diubah",
+    )
+    run.add_argument(
+        "--from-csv",
+        default="",
+        help="Path CSV untuk harga_export / harga_fix (default: output/harga_jual_perlu_update.csv)",
+    )
 
     return parser
 

@@ -413,6 +413,39 @@ def fetch_net_stok_from_trx(mysql_trx, legacy_pks: list[str]) -> dict[str, int]:
     return result
 
 
+def _resolve_barang_harga(row) -> dict:
+    return {
+        "harga_beli": resolve_harga_beli(row),
+        "harga_jual": resolve_harga_jual(row),
+        "harga_beli_lama": resolve_harga_beli_lama(row),
+        "harga_jual_lama": resolve_harga_jual_lama(row),
+        "hpp": resolve_hpp(row),
+    }
+
+
+def _update_barang_harga_jual(
+    pg,
+    *,
+    barang_id: int,
+    user_id: int,
+    harga_jual: float | None,
+    harga_jual_lama: float | None,
+) -> None:
+    """Perbaiki harga jual dari stockdetail.nSTDretail; harga beli tidak diubah."""
+    with pg.cursor() as cur:
+        cur.execute(
+            """
+            UPDATE barang
+            SET harga_jual = %s,
+                harga_jual_lama = %s,
+                updated_by = %s,
+                updated_at = NOW()
+            WHERE id = %s
+            """,
+            (harga_jual, harga_jual_lama, user_id, barang_id),
+        )
+
+
 def migrate_barang(
     mysql_master,
     mysql_trx,
@@ -423,10 +456,13 @@ def migrate_barang(
     batch_size: int,
     limit: int = 0,
     offset: int = 0,
+    update: bool = False,
 ) -> dict:
     stats = {
         "read": 0,
         "inserted": 0,
+        "updated": 0,
+        "unchanged": 0,
         "skipped": 0,
         "mapped": 0,
         "missing_brand": 0,
@@ -458,16 +494,17 @@ def migrate_barang(
         if not rows:
             break
 
-        # Ambil stok net dari transaksi (full backup).
+        # Ambil stok net dari transaksi (full backup) — skip saat --update harga jual saja.
         legacy_pks = [str(r["cSTKpk"]).strip() for r in rows]
         net_by_pk = {}
-        try:
-            with Spinner(
-                f"Menghitung stok transaksi ({processed:,}/{max_rows:,})..."
-            ):
-                net_by_pk = fetch_net_stok_from_trx(mysql_trx, legacy_pks)
-        except Exception:
-            net_by_pk = {}
+        if not update:
+            try:
+                with Spinner(
+                    f"Menghitung stok transaksi ({processed:,}/{max_rows:,})..."
+                ):
+                    net_by_pk = fetch_net_stok_from_trx(mysql_trx, legacy_pks)
+            except Exception:
+                net_by_pk = {}
 
         batch_start = processed
         try:
@@ -498,17 +535,39 @@ def migrate_barang(
                         stats["with_stok_negative"] += 1
 
                 existing_id = lookup_id_map(pg, "barang", legacy_pk)
-                if existing_id:
-                    stats["mapped"] += 1
-                    continue
-
-                existing_id = fetch_one(
-                    pg, "SELECT id FROM barang WHERE kode_barang = %s LIMIT 1", (kode,)
-                )
-                if existing_id:
-                    if not dry_run:
+                if not existing_id:
+                    existing_id = fetch_one(
+                        pg, "SELECT id FROM barang WHERE kode_barang = %s LIMIT 1", (kode,)
+                    )
+                    if existing_id and not dry_run:
                         save_id_map(pg, "barang", legacy_pk, existing_id)
+
+                if existing_id:
                     stats["mapped"] += 1
+                    if update:
+                        harga_jual = resolve_harga_jual(row)
+                        harga_jual_lama = resolve_harga_jual_lama(row)
+                        current_hj = fetch_one(
+                            pg,
+                            "SELECT harga_jual FROM barang WHERE id = %s",
+                            (existing_id,),
+                        )
+                        if (
+                            current_hj is not None
+                            and harga_jual is not None
+                            and abs(float(current_hj) - harga_jual) < 0.01
+                        ):
+                            stats["unchanged"] += 1
+                            continue
+                        if not dry_run:
+                            _update_barang_harga_jual(
+                                pg,
+                                barang_id=existing_id,
+                                user_id=user_id,
+                                harga_jual=harga_jual,
+                                harga_jual_lama=harga_jual_lama,
+                            )
+                        stats["updated"] += 1
                     continue
 
                 brand_id = lookup_id_map(pg, "brand", str(row.get("cSTKfkGRP") or "").strip())
@@ -523,11 +582,12 @@ def migrate_barang(
                 ukuran = parse_ukuran(row.get("nstkukuran"), row.get("cSTKsize"))
                 is_consignment = int(row.get("nstkkonsi") or 0) == 1
                 consignment_pct = row.get("nstktdiscp")
-                harga_beli = resolve_harga_beli(row)
-                harga_jual = resolve_harga_jual(row)
-                harga_beli_lama = resolve_harga_beli_lama(row)
-                harga_jual_lama = resolve_harga_jual_lama(row)
-                hpp = resolve_hpp(row)
+                harga = _resolve_barang_harga(row)
+                harga_beli = harga["harga_beli"]
+                harga_jual = harga["harga_jual"]
+                harga_beli_lama = harga["harga_beli_lama"]
+                harga_jual_lama = harga["harga_jual_lama"]
+                hpp = harga["hpp"]
                 # Prioritas stok:
                 # 1) transaksi (invoicedetail) jika tersedia
                 # 2) outlet total (stockdetail.outlet01-20)
