@@ -15,5 +15,8 @@ venv/
 # OS
 .DS_Store
 Thumbs.db
-
+vendor
 output/
+
+# Database backups (too large for GitHub)
+backup/

@@ -1,0 +1,13 @@
+-- =============================================================================
+-- DEPRECATED: jangan jalankan file ini sekaligus di DBeaver (error di query ke-2).
+--
+-- Pakai file terpisah (buka SATU file, Ctrl+A, Execute):
+--   stok_minus_01_ringkasan.sql   → barang net stok < 0
+--   stok_minus_02_transaksi.sql   → detail faktur per barang minus
+--   stok_minus_03_gabungan.sql    → ledger + saldo berjalan (MySQL 8+)
+--
+-- Atau export Excel:
+--   ./run.sh export-stok-minus-bukti --mysql-db trx
+--
+-- Database DBeaver: pilih `sragen` di panel kiri (jangan USE di SQL).
+-- =============================================================================

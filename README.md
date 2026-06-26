@@ -157,6 +157,17 @@ Detail langkah stok pajak: [`docs/MIGRASI-STOK-PAJAK.md`](docs/MIGRASI-STOK-PAJA
 
 Stok dihitung dari `invoicedetail` (DB full backup). Stok **boleh minus** sesuai ketentuan client.
 
+### Production via tunnel (Biznet)
+
+Jika jaringan memblok akses langsung ke DigitalOcean PostgreSQL:
+
+1. Jalankan tunnel: `~/bin/matahari-production-tunnel.sh`
+2. Cek: `./scripts/check_tunnel.sh`
+3. Di `.env`: `PG_HOST=127.0.0.1`, `PG_PORT=55432`, `PG_SSLMODE=require`
+4. Panduan lengkap: [`docs/TUNNEL-DB.md`](docs/TUNNEL-DB.md)
+
+Alias psql (opsional): `source scripts/pg_aliases.sh` → `pgprod` / `pgdev`
+
 ### Estimasi waktu
 
 - Supplier + golongan: < 1 menit
@@ -211,6 +222,7 @@ Install Python (lihat bagian di atas), lalu ulangi `./setup.sh`.
 - Pastikan service database sudah jalan
 - Cek `host` / `port` di `.env`
 - Tes manual: `mysql -h 127.0.0.1 -P 3307 -u root -p`
+- Production via tunnel: `./scripts/check_tunnel.sh` — lihat [`docs/TUNNEL-DB.md`](docs/TUNNEL-DB.md)
 
 ### `./run.sh: Permission denied`
 

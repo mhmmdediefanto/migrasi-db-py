@@ -307,6 +307,27 @@ Jalankan query di atas **per database cabang**:
 
 ---
 
+### Net stok per golongan — bukti stok minus + transaksi
+
+File SQL lengkap (3 query: ringkasan, transaksi, gabungan ledger):
+
+- [`scripts/sql/stok_minus_bukti.sql`](../scripts/sql/stok_minus_bukti.sql)
+
+Export Excel otomatis (3 sheet: Ringkasan Minus, Transaksi, Gabungan Bukti):
+
+```bash
+./run.sh export-stok-minus-bukti \
+  --golongan '07/MULTIGARMENTAMA + PPN' \
+  --mysql-db trx
+# → output/stok_minus_07_multigarmentama_ppn_sragen.xlsx (nama otomatis dari golongan + DB)
+```
+
+**5. Detail stok minus + transaksi (gabungan bukti, MySQL 8+)**
+
+Ganti `@golongan` lalu jalankan query #3 di `scripts/sql/stok_minus_bukti.sql`. Kolom `cocok_akhir = YA` artinya saldo berjalan baris terakhir = net stok ringkasan.
+
+---
+
 ### Net stok per golongan
 
 Relasi golongan: `stock.cSTKfkGRP` → `stockgroup.cGRPpk`, nama golongan = `stockgroup.cGRPdesc`.
